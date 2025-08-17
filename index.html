@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Exam Marking Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        canvas {
+            cursor: crosshair;
+        }
+        .loader {
+            border: 8px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 8px solid #3498db;
+            width: 60px;
+            height: 60px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+
+    <div class="container mx-auto p-4 lg:p-8">
+        <header class="text-center mb-8">
+            <h1 class="text-4xl font-bold text-gray-900">Exam Marking Tool</h1>
+            <p class="text-lg text-gray-600 mt-2">Upload student papers, mark them, and download all results in one CSV file.</p>
+        </header>
+
+        <div class="bg-white rounded-2xl shadow-xl p-6 lg:p-8">
+            <!-- Toolbar -->
+            <div id="toolbar" class="flex flex-wrap items-center justify-between gap-4 mb-6 border-b pb-6">
+                <div class="flex items-center gap-4">
+                    <input type="file" id="pdf-upload" class="hidden" accept="application/pdf">
+                    <button id="upload-btn" class="bg-blue-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-blue-700 transition-all duration-300 ease-in-out">
+                        Upload Student PDF
+                    </button>
+                    <div id="loading-indicator" class="loader hidden"></div>
+                </div>
+                <div id="controls" class="hidden flex-wrap items-center gap-4">
+                    <div class="flex items-center gap-2">
+                        <button id="prev-page" class="bg-gray-200 text-gray-700 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors">Prev</button>
+                        <span id="page-num" class="text-lg font-medium"></span>
+                        <button id="next-page" class="bg-gray-200 text-gray-700 font-semibold py-2 px-4 rounded-lg hover:bg-gray-300 transition-colors">Next</button>
+                    </div>
+                    <button id="undo-btn" class="bg-yellow-500 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-yellow-600 transition-colors">Undo Last Mark</button>
+                    <button id="download-csv-btn" class="bg-green-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-green-700 transition-colors">Download All as CSV</button>
+                    <button id="save-pdf-btn" class="bg-purple-600 text-white font-semibold py-2 px-4 rounded-lg shadow-md hover:bg-purple-700 transition-colors">Save as PDF</button>
+                </div>
+            </div>
+
+            <!-- Main Content -->
+            <div id="main-content" class="text-center">
+                 <div id="pdf-viewer" class="w-full h-full flex justify-center items-center bg-gray-50 rounded-lg border-2 border-dashed border-gray-300" style="min-height: 70vh;">
+                    <canvas id="pdf-canvas" class="rounded-lg shadow-inner"></canvas>
+                     <p id="upload-placeholder" class="text-gray-500">Please upload a PDF file to begin marking.</p>
+                </div>
+            </div>
+
+            <!-- Marks Display -->
+            <div id="marks-display" class="mt-6 text-center hidden">
+                <h2 class="text-2xl font-bold">Marks for <span id="current-filename" class="text-blue-600"></span></h2>
+                <p class="text-lg">Current Page: <span id="current-page-marks" class="font-semibold">0</span></p>
+                <p class="text-lg">Total for this Exam: <span id="total-marks" class="font-semibold">0</span></p>
+            </div>
+        </div>
+
+        <!-- Modal for Message -->
+        <div id="message-modal" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center hidden">
+            <div class="bg-white p-8 rounded-lg shadow-2xl max-w-sm text-center">
+                <p id="modal-message" class="text-lg mb-4"></p>
+                <button id="modal-close-btn" class="bg-blue-600 text-white font-semibold py-2 px-6 rounded-lg hover:bg-blue-700 transition-colors">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Set worker source for PDF.js
+        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
+        const { jsPDF } = window.jspdf;
+
+        const uploadBtn = document.getElementById('upload-btn');
+        const pdfUpload = document.getElementById('pdf-upload');
+        const pdfViewer = document.getElementById('pdf-viewer');
+        const pdfCanvas = document.getElementById('pdf-canvas');
+        const prevPageBtn = document.getElementById('prev-page');
+        const nextPageBtn = document.getElementById('next-page');
+        const pageNumSpan = document.getElementById('page-num');
+        const undoBtn = document.getElementById('undo-btn');
+        const downloadCsvBtn = document.getElementById('download-csv-btn');
+        const savePdfBtn = document.getElementById('save-pdf-btn');
+        const loadingIndicator = document.getElementById('loading-indicator');
+        const controls = document.getElementById('controls');
+        const marksDisplay = document.getElementById('marks-display');
+        const currentFilenameSpan = document.getElementById('current-filename');
+        const currentPageMarksSpan = document.getElementById('current-page-marks');
+        const totalMarksSpan = document.getElementById('total-marks');
+        const uploadPlaceholder = document.getElementById('upload-placeholder');
+        
+        // Modal elements
+        const messageModal = document.getElementById('message-modal');
+        const modalMessage = document.getElementById('modal-message');
+        const modalCloseBtn = document.getElementById('modal-close-btn');
+
+        let pdfDoc = null;
+        let pageNum = 1;
+        let pageRendering = false;
+        let pageNumPending = null;
+        const scale = 1.5;
+        const ctx = pdfCanvas.getContext('2d');
+        
+        // This object will store marks for all uploaded PDFs, keyed by filename.
+        let allMarks = {};
+        let currentFilename = null;
+
+        // Event Listeners
+        uploadBtn.addEventListener('click', () => pdfUpload.click());
+        pdfUpload.addEventListener('change', handleFileUpload);
+        prevPageBtn.addEventListener('click', onPrevPage);
+        nextPageBtn.addEventListener('click', onNextPage);
+        undoBtn.addEventListener('click', undoLastMark);
+        downloadCsvBtn.addEventListener('click', downloadAllMarksAsCSV);
+        savePdfBtn.addEventListener('click', savePdfWithMarks);
+        pdfCanvas.addEventListener('click', handleCanvasClick);
+        modalCloseBtn.addEventListener('click', () => messageModal.classList.add('hidden'));
+
+        // Keyboard shortcut for next page
+        document.addEventListener('keydown', (event) => {
+            // Check if a PDF is loaded and the pressed key is 'n' or 'N'
+            if (pdfDoc && event.key.toLowerCase() === 'n') {
+                // We don't want the shortcut to trigger if the user is typing in a future input field.
+                if (document.activeElement.tagName.toLowerCase() === 'input' || document.activeElement.tagName.toLowerCase() === 'textarea') {
+                    return;
+                }
+                event.preventDefault(); // Prevent any default browser action
+                onNextPage();
+            }
+        });
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file || file.type !== 'application/pdf') {
+                showMessage('Please select a PDF file.');
+                return;
+            }
+            
+            currentFilename = file.name;
+            // Initialize marks for this file if it's the first time seeing it.
+            if (!allMarks[currentFilename]) {
+                allMarks[currentFilename] = {};
+            }
+
+            const fileReader = new FileReader();
+            fileReader.onload = function() {
+                const typedarray = new Uint8Array(this.result);
+                loadingIndicator.classList.remove('hidden');
+                uploadPlaceholder.classList.add('hidden');
+                pdfViewer.classList.remove('border-2', 'border-dashed', 'border-gray-300');
+
+                const loadingTask = pdfjsLib.getDocument(typedarray);
+                loadingTask.promise.then(pdf => {
+                    pdfDoc = pdf;
+                    pageNum = 1;
+                    renderPage(pageNum);
+                    controls.classList.remove('hidden');
+                    marksDisplay.classList.remove('hidden');
+                    loadingIndicator.classList.add('hidden');
+                }, reason => {
+                    console.error(reason);
+                    showMessage('Error loading PDF file.');
+                    loadingIndicator.classList.add('hidden');
+                });
+            };
+            fileReader.readAsArrayBuffer(file);
+        }
+
+        function renderPage(num) {
+            pageRendering = true;
+            pdfDoc.getPage(num).then(page => {
+                const viewport = page.getViewport({ scale: scale });
+                pdfCanvas.height = viewport.height;
+                pdfCanvas.width = viewport.width;
+
+                const renderContext = {
+                    canvasContext: ctx,
+                    viewport: viewport
+                };
+                const renderTask = page.render(renderContext);
+
+                renderTask.promise.then(() => {
+                    pageRendering = false;
+                    if (pageNumPending !== null) {
+                        renderPage(pageNumPending);
+                        pageNumPending = null;
+                    }
+                    drawMarks(ctx, num);
+                    updateUI();
+                });
+            });
+        }
+
+        function queueRenderPage(num) {
+            if (pageRendering) {
+                pageNumPending = num;
+            } else {
+                renderPage(num);
+            }
+        }
+
+        function onPrevPage() {
+            if (pageNum <= 1) return;
+            pageNum--;
+            queueRenderPage(pageNum);
+        }
+
+        function onNextPage() {
+            if (pageNum >= pdfDoc.numPages) return;
+            pageNum++;
+            queueRenderPage(pageNum);
+        }
+        
+        function handleCanvasClick(event) {
+            if (!pdfDoc) return;
+            const rect = pdfCanvas.getBoundingClientRect();
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            const markValue = 1;
+            
+            const currentFileMarks = allMarks[currentFilename];
+            if (!currentFileMarks[pageNum]) {
+                currentFileMarks[pageNum] = [];
+            }
+            currentFileMarks[pageNum].push({ x, y, value: markValue });
+            drawMark(ctx, x, y);
+            updateMarksDisplay();
+        }
+
+        function drawMark(context, x, y) {
+            context.strokeStyle = 'red';
+            context.lineWidth = 3;
+            context.beginPath();
+            context.moveTo(x - 8, y);
+            context.lineTo(x, y + 8);
+            context.lineTo(x + 16, y - 8);
+            context.stroke();
+        }
+        
+        function drawMarks(context, pageNumber) {
+            const pageMarks = allMarks[currentFilename][pageNumber] || [];
+            pageMarks.forEach(mark => drawMark(context, mark.x, mark.y));
+        }
+
+        function undoLastMark() {
+            const currentFileMarks = allMarks[currentFilename];
+            if (currentFileMarks[pageNum] && currentFileMarks[pageNum].length > 0) {
+                currentFileMarks[pageNum].pop();
+                renderPage(pageNum);
+            } else {
+                showMessage("No marks to undo on this page.");
+            }
+        }
+
+        function updateMarksDisplay() {
+            if (!currentFilename) return;
+            const currentFileMarks = allMarks[currentFilename];
+            
+            let currentPageTotal = (currentFileMarks[pageNum] || []).reduce((sum, mark) => sum + mark.value, 0);
+            currentPageMarksSpan.textContent = currentPageTotal;
+
+            let total = 0;
+            for (const page in currentFileMarks) {
+                total += currentFileMarks[page].reduce((sum, mark) => sum + mark.value, 0);
+            }
+            totalMarksSpan.textContent = total;
+            currentFilenameSpan.textContent = currentFilename;
+        }
+
+        function updateUI() {
+            pageNumSpan.textContent = `Page ${pageNum} of ${pdfDoc.numPages}`;
+            prevPageBtn.disabled = pageNum <= 1;
+            nextPageBtn.disabled = pageNum >= pdfDoc.numPages;
+            updateMarksDisplay();
+        }
+
+        function downloadAllMarksAsCSV() {
+            if (Object.keys(allMarks).length === 0) {
+                showMessage("No marks have been recorded yet.");
+                return;
+            }
+
+            let csvContent = "data:text/csv;charset=utf-8,";
+            csvContent += "Student Name,Page Number,Total Marks on Page\r\n";
+
+            for (const filename in allMarks) {
+                const studentMarks = allMarks[filename];
+                for (const pageNum in studentMarks) {
+                    const pageMarks = studentMarks[pageNum];
+                    const pageTotal = pageMarks.reduce((sum, mark) => sum + mark.value, 0);
+                    if (pageTotal > 0) {
+                        csvContent += `"${filename}",${pageNum},${pageTotal}\r\n`;
+                    }
+                }
+            }
+
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", "all_student_marks.csv");
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            showMessage("CSV with all marks has been downloaded.");
+        }
+
+        async function savePdfWithMarks() {
+            if (!pdfDoc) {
+                showMessage("Please upload a PDF first.");
+                return;
+            }
+            showMessage("Generating PDF... Please wait.");
+            
+            const newPdf = new jsPDF();
+            const renderScale = 2;
+
+            for (let i = 1; i <= pdfDoc.numPages; i++) {
+                if (i > 1) {
+                    newPdf.addPage();
+                }
+
+                const page = await pdfDoc.getPage(i);
+                const viewport = page.getViewport({ scale: renderScale });
+                const tempCanvas = document.createElement('canvas');
+                const tempCtx = tempCanvas.getContext('2d');
+                tempCanvas.height = viewport.height;
+                tempCanvas.width = viewport.width;
+
+                await page.render({ canvasContext: tempCtx, viewport: viewport }).promise;
+                drawMarks(tempCtx, i);
+
+                const imgData = tempCanvas.toDataURL('image/png');
+                const { width, height } = newPdf.internal.pageSize;
+                newPdf.addImage(imgData, 'PNG', 0, 0, width, height);
+            }
+
+            const markedFilename = `marked-${currentFilename}`;
+            newPdf.save(markedFilename);
+            showMessage("Marked PDF has been saved!");
+        }
+        
+        function showMessage(message) {
+            modalMessage.textContent = message;
+            messageModal.classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
